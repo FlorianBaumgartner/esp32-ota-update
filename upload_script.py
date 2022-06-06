@@ -1,6 +1,7 @@
 Import("env")
 
 import time
+import glob
 from uf2_loader import UF2Loader
 from dfu_reboot import DFU_Reboot
 
@@ -32,6 +33,10 @@ def on_upload(source, target, env):
 
     #print(f"firmware_path: {firmware_path}")
     #print(f"USB_SERIAL: {usb_serial}, USB_VID: {usb_vid:04X}, USB_PID: {usb_pid:04X}, COMPARE_SERIAL_NUMBER: {compare_Serial}")
+
+    print(firmware_path)
+    print(firmware_path.rsplit('.', 1)[0] + ".UF2")
+    loader.save(firmware_path, firmware_path.rsplit('.', 1)[0] + ".UF2")
 
     availableDrives = loader.get_drives()
     if not availableDrives:

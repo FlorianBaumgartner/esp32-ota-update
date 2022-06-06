@@ -6,20 +6,20 @@ import os
 import os.path
 import glob
 
-
-SEARCH_PATH = "esp32-firmware-update/*.bin"
-
-appstartaddr = 0x2000
-familyid = 0x0
-
+class Namespace:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
 
 class UF2Loader:
-    def __init__(self):
+    def __init__(self, family ="ESP32S2", startAddr=0x2000):
         self.UF2_MAGIC_START0 = 0x0A324655   # "UF2\n"
         self.UF2_MAGIC_START1 = 0x9E5D5157   # Randomly selected
         self.UF2_MAGIC_END    = 0x0AB16F30   # Ditto
         
+        self.SEARCH_PATH = "esp32-firmware-update/*.bin"
         self.INFO_FILE = "/INFO_UF2.TXT"
+        self.appstartaddr = startAddr
+        self.familyid = 0x0
         
         self.families = {
             'SAMD21': 0x68ed2b88,
@@ -32,6 +32,18 @@ class UF2Loader:
             'MIMXRT10XX': 0x4FB2D5BD,
             'ESP32S2': 0xBFDD4EEE,
         }
+
+        self.args = Namespace(
+            base=startAddr,
+            carray=False,
+            convert=False,
+            deploy=False,
+            device_path=None,
+            family=family,
+            input=None,
+            list=False,
+            output=None
+        )
         
         
     def is_uf2(self, buf):
@@ -48,7 +60,6 @@ class UF2Loader:
         return False
     
     def convert_from_uf2(self, buf):
-        global appstartaddr
         numblocks = len(buf) // 512
         curraddr = None
         outp = b""
@@ -67,7 +78,7 @@ class UF2Loader:
                 assert False, "Invalid UF2 data size at " + ptr
             newaddr = hd[3]
             if curraddr == None:
-                appstartaddr = newaddr
+                self.appstartaddr = newaddr
                 curraddr = newaddr
             padding = newaddr - curraddr
             if padding < 0:
@@ -93,7 +104,6 @@ class UF2Loader:
         return outp
     
     def convert_to_uf2(self, file_content):
-        global familyid
         datapadding = b""
         while len(datapadding) < 512 - 256 - 32 - 4:
             datapadding += b"\x00\x00\x00\x00"
@@ -103,11 +113,11 @@ class UF2Loader:
             ptr = 256 * blockno
             chunk = file_content[ptr:ptr + 256]
             flags = 0x0
-            if familyid:
+            if self.familyid:
                 flags |= 0x2000
             hd = struct.pack(b"<IIIIIIII",
                 self.UF2_MAGIC_START0, self.UF2_MAGIC_START1,
-                flags, ptr + appstartaddr, 256, blockno, numblocks, familyid)
+                flags, ptr + self.appstartaddr, 256, blockno, numblocks, self.familyid)
             while len(chunk) < 256:
                 chunk += b"\x00"
             block = hd + chunk + datapadding + struct.pack(b"<I", self.UF2_MAGIC_END)
@@ -115,28 +125,27 @@ class UF2Loader:
             outp += block
         return outp
     
-    class Block:
-        def __init__(self, addr):
-            self.addr = addr
-            self.bytes = bytearray(256)
+    # class Block:
+    #     def __init__(self, addr):
+    #         self.addr = addr
+    #         self.bytes = bytearray(256)
     
-        def encode(self, blockno, numblocks):
-            global familyid
-            flags = 0x0
-            if familyid:
-                flags |= 0x2000
-            hd = struct.pack("<IIIIIIII",
-                self.UF2_MAGIC_START0, self.UF2_MAGIC_START1,
-                flags, self.addr, 256, blockno, numblocks, familyid)
-            hd += self.bytes[0:256]
-            while len(hd) < 512 - 4:
-                hd += b"\x00"
-            hd += struct.pack("<I", self.UF2_MAGIC_END)
-            return hd
+    #     def encode(self, blockno, numblocks):
+    #         global familyid
+    #         flags = 0x0
+    #         if familyid:
+    #             flags |= 0x2000
+    #         hd = struct.pack("<IIIIIIII",
+    #             self.UF2_MAGIC_START0, self.UF2_MAGIC_START1,
+    #             flags, self.addr, 256, blockno, numblocks, familyid)
+    #         hd += self.bytes[0:256]
+    #         while len(hd) < 512 - 4:
+    #             hd += b"\x00"
+    #         hd += struct.pack("<I", self.UF2_MAGIC_END)
+    #         return hd
     
     def convert_from_hex_to_uf2(self, buf):
-        global appstartaddr
-        appstartaddr = None
+        self.appstartaddr = None
         upper = 0
         currblock = None
         blocks = []
@@ -158,8 +167,8 @@ class UF2Loader:
                 break
             elif tp == 0:
                 addr = upper | (rec[1] << 8) | rec[2]
-                if appstartaddr == None:
-                    appstartaddr = addr
+                if self.appstartaddr == None:
+                    self.appstartaddr = addr
                 i = 4
                 while i < len(rec) - 1:
                     if not currblock or currblock.addr & ~0xff != addr & ~0xff:
@@ -223,92 +232,54 @@ class UF2Loader:
         with open(name, "wb") as f:
             f.write(buf)
         print("Wrote %d bytes to %s" % (len(buf), name))
-    
-    
-    def download(self, path):
-        global appstartaddr, familyid      
-        class Namespace:
-            def __init__(self, **kwargs):
-                self.__dict__.update(kwargs)
-        
-        args = Namespace(
-            base='0x0000',
-            carray=False,
-            convert=False,
-            deploy=False,
-            device_path=None,
-            family='ESP32S2',
-            input=None,
-            list=False,
-            output=None
-        )
-        
-        # parser = argparse.ArgumentParser(description='Convert to UF2 or flash directly.')
-        # parser.add_argument('input', metavar='INPUT', type=str, nargs='?', help='input file (HEX, BIN or UF2)')
-        # parser.add_argument('-b' , '--base', dest='base', type=str, default="0x0000", help='set base address of application for BIN format (default: 0x2000)')
-        # parser.add_argument('-o' , '--output', metavar="FILE", dest='output', type=str, help='write output to named file; defaults to "flash.uf2" or "flash.bin" where sensible')
-        # parser.add_argument('-d' , '--device', dest="device_path", help='select a device path to flash')
-        # parser.add_argument('-l' , '--list', action='store_true', help='list connected devices')
-        # parser.add_argument('-c' , '--convert', action='store_true', help='do not flash, just convert')
-        # parser.add_argument('-D' , '--deploy', action='store_true', help='just flash, do not convert')
-        # parser.add_argument('-f' , '--family', dest='family', type=str, default="ESP32S2", help='specify familyID - number or name (default: 0x0)')
-        # parser.add_argument('-C' , '--carray', action='store_true', help='convert binary file to a C array, not UF2')
-        # args = parser.parse_args()
 
-        appstartaddr = int(args.base, 0)
+    def save(self, inputPath, savePath):
+        #self.appstartaddr = int(self.args.base, 16)
     
-        if args.family.upper() in self.families:
-            familyid = self.families[args.family.upper()]
+        if self.args.family.upper() in self.families:
+            familyid = self.families[self.args.family.upper()]
         else:
             try:
-                familyid = int(args.family, 0)
+                self.familyid = int(self.args.family, 0)
             except ValueError:
                 return("Family ID needs to be a number or one of: " + ", ".join(self.families.keys()))
     
-        if args.list:
-            self.list_drives()
+        self.args.input = glob.glob(inputPath)[0]
+        self.args.output = savePath
+
+        print("Input: ", self.args.input)
+        print("Output: ", self.args.output)
+            
+        with open(self.args.input, mode='rb') as f:
+            inpbuf = f.read()
+        from_uf2 = self.is_uf2(inpbuf)
+        ext = "uf2"
+        if self.args.deploy:
+            outbuf = inpbuf
+        elif from_uf2:
+            outbuf = self.convert_from_uf2(inpbuf)
+            ext = "bin"
+        elif self.is_hex(inpbuf):
+            outbuf = self.convert_from_hex_to_uf2(inpbuf.decode("utf-8"))
+        elif self.args.carray:
+            outbuf = self.convert_to_carray(inpbuf)
+            ext = "h"
         else:
-            if not args.input:
-                try:
-                    args.input = glob.glob(path)[0]
-                except:
-                    return("No file found")
-                
-            with open(args.input, mode='rb') as f:
-                inpbuf = f.read()
-            from_uf2 = self.is_uf2(inpbuf)
-            ext = "uf2"
-            if args.deploy:
-                outbuf = inpbuf
-            elif from_uf2:
-                outbuf = self.convert_from_uf2(inpbuf)
-                ext = "bin"
-            elif self.is_hex(inpbuf):
-                outbuf = self.convert_from_hex_to_uf2(inpbuf.decode("utf-8"))
-            elif args.carray:
-                outbuf = self.convert_to_carray(inpbuf)
-                ext = "h"
-            else:
-                outbuf = self.convert_to_uf2(inpbuf)
-            #print("\nConverting to %s, output size: %d, start address: 0x%x" % (ext, len(outbuf), appstartaddr))
-            if args.convert or ext != "uf2":
-                drives = []
-                if args.output == None:
-                    args.output = "flash." + ext
-            else:
-                drives = self.get_drives()
+            outbuf = self.convert_to_uf2(inpbuf)
+
+        print("Converting to %s, output size: %d, start address: 0x%x" % (ext, len(outbuf), self.appstartaddr))
+        self.write_file(self.args.output, outbuf)
     
-            if args.output:
-                self.write_file(args.output, outbuf)
-            else:
-                if len(drives) == 0:
-                    return("No drive to deploy.")
-            print()
-            for d in drives:
-                print("Converting to %s, output size: %d, start address: 0x%x" % (ext, len(outbuf), appstartaddr))
-                print("Flashing %s (%s)" % (d, self.board_id(d)))
-                self.write_file(d + "/NEW.UF2", outbuf)
-            return None
+    
+    def download(self, inputPath):
+        drives = self.get_drives()
+        if len(drives) == 0:
+            return("No drive to deploy.")
+        print()
+        for d in drives:
+            print("Flashing %s (%s)" % (d, self.board_id(d)))
+            self.save(inputPath, d + "/NEW.UF2")
+        return None
 
 
 if __name__ == "__main__":
